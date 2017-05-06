@@ -48,7 +48,7 @@ typedef struct _sensorHistory {
   unsigned long periodC;
 } sensorHistory;
 
-float currentLeftOhms = 0;
+float currentLeftPercent = 0;
 
 // convenience macros for determining which sensors are "on" (low). Note repitition of logic for ease of understanding (e.g. AB is the same as BA).
 #define isA(x) ((x).a==LOW && (x).b==HIGH && (x).c==HIGH)
@@ -82,6 +82,8 @@ void setup() {
   
   Mcp4261.wiper0_pos(0); // rAW = rW_ohms
   Mcp4261.wiper1_pos(0); // rAW = rW_ohms
+  Mcp4261.scale = 100.0;
+  delay(100);
 }
 
 void loop() {
@@ -153,36 +155,44 @@ void loop() {
 
   // Okay! Test 1:
   // If the left reading doesn't match the right reading, then try to emulate it using Mcp4261.wiper0_pos().
-  if (currentRightReading.isValid &&
-        ((!currentLeftReading.isValid) ||
-        currentLeftReading.movingForward != currentRightReading.movingForward ||
-        currentLeftReading.movingBackward != currentRightReading.movingBackward ||
-        abs(currentLeftReading.estimatedPeriodOverall - currentRightReading.estimatedPeriodOverall) > 5)) {
-
-      // update the left potentiometer.
-      if ((currentRightReading.movingForward == false && currentRightReading.movingBackward == false)) {
-        // stop the motor
-        currentLeftOhms = 0;
-//        Serial.println("stop");
+  static unsigned long nextAdjustTime = 0;
+  if (nextAdjustTime <= millis()) { // don't adjust too often.
+    bool doAdjust = false;
+    
+    if (currentRightReading.isValid) {
+      if (!currentLeftReading.isValid) {
+        // assume we need to start it moving a little faster.
+          // 35% is the "minimum moving" ratio. Go there now.
+        if (currentLeftPercent < 35) {
+          Serial.println("start");
+          currentLeftPercent = 35;
+        }
+        doAdjust = true;
       } else if (currentRightReading.estimatedPeriodOverall < currentLeftReading.estimatedPeriodOverall) {
         // go faster
-        if (currentLeftOhms < rAB_ohms-1) {
-//          Serial.println("increase");
-          currentLeftOhms++;
-        } else {
-          currentLeftOhms = rAB_ohms;
+          Serial.println("increase");
+        if (currentLeftPercent < 100) {
+          currentLeftPercent++;
         }
+        doAdjust = true;
       } else if (currentRightReading.estimatedPeriodOverall > currentLeftReading.estimatedPeriodOverall) {
         // go slower
-        if (currentLeftOhms >= 1) {
-//          Serial.println("decrease");
-          currentLeftOhms--;
+          Serial.println("decrease");
+        if (currentLeftPercent > 35) {
+          currentLeftPercent--;
         } else {
-          currentLeftOhms = 0;
+          currentLeftPercent = 0;
         }
+        doAdjust = true;
       }
       // make the adjustment
-//      Mcp4261.wiper0_pos(currentLeftOhms);
+      if (doAdjust) {
+        Serial.print("adjust ");
+        Serial.println(currentLeftPercent);
+        Mcp4261.wiper0(currentLeftPercent);
+      }
+    }
+    nextAdjustTime = millis() + 250;
   }
 
 }
@@ -324,7 +334,10 @@ void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorSt
   
   // FIXME: how do we get "not moving"? Need some sort of "sat on AB too long" or whatever (for each state)
   
-  // If we have good data then mark this as valid and estimate the overall period.
+  // If we have good period data then mark this as valid and estimate the overall period.
+  // "good data" means:
+  //     we have a period reading from two sensors that are nearly the same
+  //     or, there are no readings from any of the sensors at all?
   if ( (currentReading->movingBackward || currentReading->movingForward) &&
       (currentReading->periodA || currentReading->periodB || currentReading->periodC) ) {
       if (currentReading->periodA && abs(currentReading->periodA - currentReading->periodB) < 20) {
@@ -337,8 +350,8 @@ void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorSt
           currentReading->isValid = true;
           currentReading->estimatedPeriodOverall = currentReading->periodC >> bitShiftModifier;
       } else {
-        // If the previous reading was valid, then assume we're stopped.
-        currentReading->movingBackward = currentReading->movingForward = 0;
+        // This reading is not (yet?) valid.
+        currentReading->isValid = false;
       }
   }
 }
