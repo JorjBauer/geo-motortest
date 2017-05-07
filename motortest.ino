@@ -283,7 +283,7 @@ MCP4261 Mcp4261 = MCP4261( MCP4261_SLAVE_SELECT_PIN, rAB_ohms );
 #define RsensorC 6
 #define RsensorPower 9
 
-#define bitShiftModifier 6
+#define bitShiftModifier 7
 
 typedef struct _sensorState {
   bool a;
@@ -426,11 +426,11 @@ if (currentRightReading.isValid) {
     bool doAdjust = false;
     
     if (currentRightReading.isValid) {
-      int cur = min(((int)currentLeftReading.estimatedPeriodOverall)>>1, 255);
+      int cur = min(((int)currentLeftReading.estimatedPeriodOverall), 255);
       if (!currentLeftReading.isValid) {
         cur = 0;
       }
-      int desired = min(((int)currentRightReading.estimatedPeriodOverall)>>1, 255);
+      int desired = min(((int)currentRightReading.estimatedPeriodOverall), 255);
 
       if (cur < desired) {
         // go faster. How much faster?
@@ -500,7 +500,9 @@ void readSensors(sensorState *s, bool isLeft)
 
 void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorState *previousState, sensorHistory *history, sensorReading *currentReading, sensorReading *previousReading)
 {
-  // To get speed, we need to measure the off-pulse length.
+  
+  // To get speed, we need to measure the off-pulse length. If we have *none*, then we'll copy anything that exists in the old one.
+  
   if (currentState->a == false) {
       if (history->startA == 0) {
           history->startA = sampleTime;
@@ -548,93 +550,90 @@ void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorSt
           currentReading->periodC = history->periodC;
       }
   }
+
+  if (!currentReading->periodA && !currentReading->periodB && !currentReading->periodC) {
+    currentReading->periodA = previousReading->periodA;
+    currentReading->periodB = previousReading->periodB;
+    currentReading->periodC = previousReading->periodC;
+  }
+
+  
   
   // To find direction, we need to know the firing order of A, B, C.
   // Either we're going AB B BC C CA A or we're going AC C CB B BA A.
   // Start by assuming we're in the exact state as the previous time, and then check to see if anything has changed.
+  // We look two steps in the future in case we missed one.
   currentReading->movingForward = previousReading->movingForward;
   currentReading->movingBackward = currentReading->movingBackward;
   if (isAB(*previousState)) {
       // forward would be AB -> B; backward would be BA -> A.
       // FIXME: Do we need double-jump testing (AB -> BC and BA -> AC)?
-      if (isB(*currentState)) {
+      if (isB(*currentState) || isBC(*currentState)) {
           currentReading->movingForward = true;
           currentReading->movingBackward = false;
       }
-      else if (isA(*currentState)) {
+      else if (isA(*currentState) || isAC(*currentState)) {
           currentReading->movingBackward = true;
           currentReading->movingForward = false;
       }
       
   } else if (isB(*previousState)) {
       // Forward would be B -> BC; backward would be B -> BA.
-      if (isBC(*currentState)) {
+      if (isBC(*currentState) || isC(*currentState)) {
           currentReading->movingForward = true;
           currentReading->movingBackward = false;
-      } else if (isBA(*currentState)) {
+      } else if (isBA(*currentState) || isA(*currentState)) {
           currentReading->movingBackward = true;
           currentReading->movingForward = false;
       }
       
-  } else if (isBC(*previousState)) {
+  } else if (isBC(*previousState) || isC(*previousState)) {
       // Forward would be BC -> C; backward would be BC -> B.
       if (isC(*currentState)) {
           currentReading->movingForward = true;
           currentReading->movingBackward = false;
-      } else if (isB(*currentState)) {
+      } else if (isB(*currentState) || isBA(*currentState)) {
           currentReading->movingBackward = true;
           currentReading->movingForward = false;
       }
   } else if (isC(*previousState)) {
       // Forward would be C -> CA; backward would be C -> CB.
-      if (isCA(*currentState)) {
+      if (isCA(*currentState) || isA(*currentState)) {
           currentReading->movingForward = true;
           currentReading->movingBackward = false;
-      } else if (isCB(*currentState)) {
+      } else if (isCB(*currentState) || isB(*currentState)) {
           currentReading->movingBackward = true;
           currentReading->movingForward = false;
       }
   } else if (isCA(*previousState)) {
       // Forward would be CA -> A; backward would be CA -> C.
-      if (isA(*currentState)) {
+      if (isA(*currentState) || isAB(*currentState)) {
           currentReading->movingForward = true;
           currentReading->movingBackward = false;
-      } else if (isC(*currentState)) {
+      } else if (isC(*currentState) || isCB(*currentState)) {
           currentReading->movingBackward = true;
           currentReading->movingForward = false;
       }
   } else if (isA(*previousState)) {
       // Forward would be A -> AB; backward would be A -> AC.
-      if (isAB(*currentState)) {
+      if (isAB(*currentState) || isB(*currentState)) {
           currentReading->movingForward = true;
           currentReading->movingBackward = false;
-      } else if (isAC(*currentState)) {
+      } else if (isAC(*currentState) || isC(*currentState)) {
           currentReading->movingBackward = true;
           currentReading->movingForward = false;
       }
   }
-  
-  // FIXME: how do we get "not moving"? Need some sort of "sat on AB too long" or whatever (for each state)
-  
-  // If we have good period data then mark this as valid and estimate the overall period.
-  // "good data" means:
-  //     * we have a period reading from two sensors that are nearly the same (meaning we're 
-  //     simultaneously driving at least two phases of the motor)
-  //     * OR: it's been at least (259 << 7) * 2 microseconds (= 66304) since the last update (meaning we're stopped)
-  if (currentReading->periodA || currentReading->periodB || currentReading->periodC) {
-      if (currentReading->periodA && abs(currentReading->periodA - currentReading->periodB) < 20) {
-          currentReading->isValid = true;
-          currentReading->estimatedPeriodOverall = currentReading->periodA >> bitShiftModifier;
-      } else if (currentReading->periodB && abs(currentReading->periodB - currentReading->periodC) < 20) {
-          currentReading->isValid = true;
-          currentReading->estimatedPeriodOverall = currentReading->periodB >> bitShiftModifier;
-      } else if (abs(currentReading->periodC - currentReading->periodA) < 20) {
-          currentReading->isValid = true;
-          currentReading->estimatedPeriodOverall = currentReading->periodC >> bitShiftModifier;
-      } else {
-        // This reading is not (yet?) valid.
-        currentReading->isValid = false;
-      }
+    
+  if (currentReading->periodA) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodA >> bitShiftModifier;
+  } else if (currentReading->periodB) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodB >> bitShiftModifier;
+  } else if (currentReading->periodC) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodC >> bitShiftModifier;
   } else if ((sampleTime - history->timeOfLastReading) >= 66304) {
     currentReading->isValid = true;
     currentReading->movingForward = currentReading->movingBackward = false;
