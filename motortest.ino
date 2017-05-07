@@ -1,6 +1,19 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <MCP4261.h>
+#include <PID_v1.h>
+
+//Define Variables we'll be connecting to
+double Setpoint, Input, Output;
+
+//Define the aggressive and conservative Tuning Parameters
+double aggKp=4, aggKi=0.2, aggKd=1;
+double consKp=1, consKi=0.05, consKd=0.25;
+
+//Specify the links and initial tuning parameters
+PID myPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, DIRECT);
+
+
 
 // If targeting time estimate [x], set to what estimated percent?
 // Note: these are *forward* values.
@@ -348,6 +361,11 @@ void setup() {
   Mcp4261.wiper1_pos(0); // rAW = rW_ohms
   Mcp4261.scale = 100.0;
   delay(100);
+
+  // PID initial setup
+  Setpoint = 0;
+  Input = 0;
+  myPID.SetMode(AUTOMATIC);
 }
 
 void loop() {
@@ -432,35 +450,26 @@ if (currentRightReading.isValid) {
       }
       int desired = min(((int)currentRightReading.estimatedPeriodOverall), 255);
 
-      if (cur < desired) {
-        // go faster. How much faster?
-        if (abs(cur - desired) > 3) {
-          // If we're not going to hit the target in 3%, then do a big step.
-          Serial.println("+F");
-          currentLeftPercent = bigChangeEstimates[desired];
-        } else {
-          // step slowly.
-          Serial.println("+S");
-          if (currentLeftPercent < 80) { // 80% is the max.
-            currentLeftPercent += 1;
-          }
-        }
-        doAdjust = true;
-      } else if (cur > desired) {
-        // go slower. How much slower?
-        if (abs(cur-desired) > 3) {
-          Serial.println("-F");
-          currentLeftPercent = bigChangeEstimates[desired];
-        } else {
-          Serial.println("-S");
-          if (currentLeftPercent > 35) {
-            currentLeftPercent -= 1;
-          } else {
-            currentLeftPercent = 0;
-          }
-        }
+      // Run a PID loop to determine output setting for Left motor
+      Setpoint = desired;
+      Input = cur;
+      double gap = abs(Setpoint-Input); //distance away from setpoint
+      if(gap<10)
+      {  //we're close to setpoint, use conservative tuning parameters
+        myPID.SetTunings(consKp, consKi, consKd);
+      }
+      else
+      {
+         //we're far from setpoint, use aggressive tuning parameters
+         myPID.SetTunings(aggKp, aggKi, aggKd);
+      }
+  
+      myPID.Compute();
+      if (currentLeftPercent != (int)Output) {
+        currentLeftPercent = (int)Output;
         doAdjust = true;
       }
+
       // make the adjustment
       if (doAdjust) {
         Mcp4261.wiper0(currentLeftPercent);
