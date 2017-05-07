@@ -466,7 +466,7 @@ if (currentRightReading.isValid) {
         Mcp4261.wiper0(currentLeftPercent);
       }
     }
-    nextAdjustTime = millis() + 50;
+    nextAdjustTime = millis() + 250;
   }
 
 }
