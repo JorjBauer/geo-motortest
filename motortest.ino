@@ -368,8 +368,8 @@ void loop() {
 
   // We want to know two things: direction and speed.
   
-  measureSensor(sampleTime, &currentLeftState, &previousLeftState, &leftSensor, &currentLeftReading, &previousLeftReading);
-  measureSensor(sampleTime, &currentRightState, &previousRightState, &rightSensor, &currentRightReading, &previousRightReading);
+  measureSensor(sampleTime, &currentLeftState, &previousLeftState, &leftSensor, &currentLeftReading, &previousLeftReading, false);
+  measureSensor(sampleTime, &currentRightState, &previousRightState, &rightSensor, &currentRightReading, &previousRightReading, true);
   
 #if 0
 // If we have a valid reading, then report it periodically
@@ -442,7 +442,7 @@ if (currentRightReading.isValid) {
           // step slowly.
           Serial.println("+S");
           if (currentLeftPercent < 80) { // 80% is the max.
-            currentLeftPercent += 0.5;
+            currentLeftPercent += 1;
           }
         }
         doAdjust = true;
@@ -454,7 +454,7 @@ if (currentRightReading.isValid) {
         } else {
           Serial.println("-S");
           if (currentLeftPercent > 35) {
-            currentLeftPercent -= 0.5;
+            currentLeftPercent -= 1;
           } else {
             currentLeftPercent = 0;
           }
@@ -463,8 +463,6 @@ if (currentRightReading.isValid) {
       }
       // make the adjustment
       if (doAdjust) {
-//        Serial.print("adjust ");
-//        Serial.println(currentLeftPercent);
         Mcp4261.wiper0(currentLeftPercent);
       }
     }
@@ -498,10 +496,13 @@ void readSensors(sensorState *s, bool isLeft)
   s->c = c;
 }
 
-void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorState *previousState, sensorHistory *history, sensorReading *currentReading, sensorReading *previousReading)
+void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorState *previousState, sensorHistory *history, sensorReading *currentReading, sensorReading *previousReading, bool debugFlag)
 {
   
   // To get speed, we need to measure the off-pulse length. If we have *none*, then we'll copy anything that exists in the old one.
+
+  // Reset the current reading
+  currentReading->periodA = currentReading->periodB = currentReading->periodC = 0;
   
   if (currentState->a == false) {
       if (history->startA == 0) {
@@ -520,6 +521,7 @@ void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorSt
       if (history->periodA) {
           // This is a true reading now.
           currentReading->periodA = history->periodA;
+          history->periodA = 0;
       }
   }
   
@@ -535,6 +537,7 @@ void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorSt
       if (history->periodB) {
           currentReading->periodB = history->periodB;
       }
+      history->periodB = 0;
   }
   
   if (currentState->c == false) {
@@ -549,6 +552,22 @@ void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorSt
       if (history->periodC) {
           currentReading->periodC = history->periodC;
       }
+      history->periodC = 0;
+  }
+
+  if (currentReading->periodA) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodA >> bitShiftModifier;
+  } else if (currentReading->periodB) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodB >> bitShiftModifier;
+  } else if (currentReading->periodC) {
+    currentReading->isValid = true;
+    currentReading->estimatedPeriodOverall = currentReading->periodC >> bitShiftModifier;
+  } else if ((sampleTime - history->timeOfLastReading) >= 66304) {
+    currentReading->isValid = true;
+    currentReading->movingForward = currentReading->movingBackward = false;
+    currentReading->estimatedPeriodOverall = 0;
   }
 
   if (!currentReading->periodA && !currentReading->periodB && !currentReading->periodC) {
@@ -624,20 +643,12 @@ void measureSensor(unsigned long sampleTime, sensorState *currentState, sensorSt
           currentReading->movingForward = false;
       }
   }
-    
-  if (currentReading->periodA) {
-    currentReading->isValid = true;
-    currentReading->estimatedPeriodOverall = currentReading->periodA >> bitShiftModifier;
-  } else if (currentReading->periodB) {
-    currentReading->isValid = true;
-    currentReading->estimatedPeriodOverall = currentReading->periodB >> bitShiftModifier;
-  } else if (currentReading->periodC) {
-    currentReading->isValid = true;
-    currentReading->estimatedPeriodOverall = currentReading->periodC >> bitShiftModifier;
-  } else if ((sampleTime - history->timeOfLastReading) >= 66304) {
-    currentReading->isValid = true;
-    currentReading->movingForward = currentReading->movingBackward = false;
+
+  if (currentReading->estimatedPeriodOverall >= 2 * 259) {
+    // We're stopped.
+    currentReading->movingForward = currentReading->movingBackward = 0;
     currentReading->estimatedPeriodOverall = 0;
   }
+
 }
 
