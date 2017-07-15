@@ -6,14 +6,60 @@
 //Define Variables we'll be connecting to
 double Setpoint, Input, Output;
 
+/* PID tuning.
+ *  
+ *  The proportional coefficient Kp reduces the rise time. It can reduce, but not eliminate, steady-state error.
+ *  The integral coefficient Ki reduces or eliminates the steady-state error for a constant/step input, but slows the response.
+ *  The derivative coefficient Kd increases the stability, reduces overshoot, and improves transient response.
+ *  
+ *  With this setup, we're going to set the right motor spinning to a somewhat arbitrary value (probably somewhere about 
+ *  half its range); then we're going to engage the Teensy to bring the left motor to the same speed. So one iteration of 
+ *  the test looks like this:
+ *  
+ *     1. Upload a zero-coefficient version of code to the Teensy;
+ *     2. Set the right wheel potentiometer to zero (no right motor movement);
+ *     3. Turn on power;
+ *     4. Adjust the right wheel to desired speed so that it rings slightly;
+ *     5. Tweak the PID values (see below);
+ *     6. upload the new values to the Teensy and repeat #5 as necessary.
+ *     
+ *  Step #3's "rings slightly" is to say that it overshoots the target by about half, then undershoots by less than half, 
+ *  and eventually reaches its target (overshooting and undershooting by less each iteration).
+ *  
+ *  Now comes the tuning in steps #5 and #6.
+ *  
+ *  A. Start by tuning Kd. Find the largest Kd that suppresses the oscillation that already exists. If your value doesn't 
+ *  cause any oscillation, then turn it up; if it does cause oscillation, then turn it down. Eventually you'll find the point 
+ *  where a slightly-larger value will cause the ringing; but the value you're at doesn't ring at all. Now you know your Kd 
+ *  limit. Set Kd to 1/3 that value; at the end, remember that you can make the response faster by decreasing this value.
+ *  
+ *  B. Tune Kp. Starting at 0, turn up Kp until you get an initial overshoot of about 50% of your target. Hopefully now you've 
+ *  got a system that overshoots by half, then undershoots by something like a quarter, overshoots by an eighth, and so on - 
+ *  coming to something near the desired target fairly quickly. (It may not get the actual right value yet.)
+ *  
+ *  C. Tune Ki. This will fix the actual target at the end. Set Ki to the maximum output value (100 in this case) and then 
+ *  decrease it until you find a point where the left motor exactly matches the target speed of the right motor. When you 
+ *  find that point, keep going - there will probably be a large window of possible values, so tune until you find that it no 
+ *  longer matches the target value. Pick something in the middle as a starting position for final tuning.
+ *  
+ *  Now you should be in the ballpark. You can make Kd smaller to get the system to equilibrium faster; Ki should give you some 
+ *  fine-tuning on the way; and if it just doesn't seem good enough, you can pick a new Kp to control the initial overshoot, 
+ *  which can make the system reach equilibrium faster.
+ *  
+ */
+
 //Define the aggressive and conservative Tuning Parameters
-double aggKp=4, aggKi=0.2, aggKd=1;
-double consKp=1, consKi=0.05, consKd=0.25;
+//double aggKp=4, aggKi=0.2, aggKd=1;
+//double consKp=1, consKi=0.05, consKd=0.25;
+double aggKp = 0, consKp = 0.25;
+double aggKi = 0, consKi = 0;
+double aggKd = 1, consKd = 1;
 
 //Specify the links and initial tuning parameters
-PID myPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, DIRECT);
+PID myPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, REVERSE); // REVERSE or DIRECT
 
-
+// When we're not moving, how many microseconds-per-pulse do we tell the PID we've got?
+#define NOTMOVING 300
 
 // If targeting time estimate [x], set to what estimated percent?
 // Note: these are *forward* values.
@@ -357,14 +403,14 @@ void setup() {
 
   SPI.begin();
   
+  Mcp4261.scale = 100.0;
   Mcp4261.wiper0_pos(0); // rAW = rW_ohms
   Mcp4261.wiper1_pos(0); // rAW = rW_ohms
-  Mcp4261.scale = 100.0;
-  delay(100);
+  delay(1000);
 
   // PID initial setup
-  Setpoint = 0;
-  Input = 0;
+  Setpoint = NOTMOVING;
+  Input = NOTMOVING;
   myPID.SetMode(AUTOMATIC);
 }
 
@@ -441,18 +487,20 @@ if (currentRightReading.isValid) {
   // If the left reading doesn't match the right reading, then try to emulate it using Mcp4261.wiper0_pos().
   static unsigned long nextAdjustTime = 0;
   if (nextAdjustTime <= millis()) { // don't adjust too often.
-    bool doAdjust = false;
-    
     if (currentRightReading.isValid) {
-      int cur = min(((int)currentLeftReading.estimatedPeriodOverall), 255);
-      if (!currentLeftReading.isValid) {
-        cur = 0;
+      int cur = currentLeftReading.estimatedPeriodOverall;
+      if (!currentLeftReading.isValid || cur==0 || cur > NOTMOVING) {
+        cur = NOTMOVING;
       }
-      int desired = min(((int)currentRightReading.estimatedPeriodOverall), 255);
+      int desired = currentRightReading.estimatedPeriodOverall;
+      if (!desired || desired > NOTMOVING) {
+        desired = NOTMOVING;
+      }
 
       // Run a PID loop to determine output setting for Left motor
       Setpoint = desired;
       Input = cur;
+#if 0
       double gap = abs(Setpoint-Input); //distance away from setpoint
       if(gap<10)
       {  //we're close to setpoint, use conservative tuning parameters
@@ -463,19 +511,19 @@ if (currentRightReading.isValid) {
          //we're far from setpoint, use aggressive tuning parameters
          myPID.SetTunings(aggKp, aggKi, aggKd);
       }
-  
-      myPID.Compute();
-      if (currentLeftPercent != (int)Output) {
-        currentLeftPercent = (int)Output;
-        doAdjust = true;
-      }
+#endif
 
-      // make the adjustment
-      if (doAdjust) {
+      myPID.Compute();
+
+      if (currentLeftPercent != min(Output, 100)) {
+        currentLeftPercent = min(Output, 100);
+
+        Serial.println("!");
+        Serial.println(currentLeftPercent);
         Mcp4261.wiper0(currentLeftPercent);
       }
     }
-    nextAdjustTime = millis() + 250;
+    nextAdjustTime = millis()+1;
   }
 
 }
